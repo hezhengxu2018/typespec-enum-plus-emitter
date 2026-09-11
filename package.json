@@ -1,0 +1,53 @@
+{
+  "name": "typespec-enum-plus-emitter",
+  "version": "0.1.0",
+  "description": "TypeSpec decorators, emitter and CLI for generating enum-plus modules.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./runtime/index.js",
+  "tspMain": "./lib/main.tsp",
+  "exports": {
+    ".": {
+      "typespec": "./lib/main.tsp",
+      "default": "./runtime/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "typespec-enum-plus-emitter": "./cli/typespec-enum-plus-emitter.mjs"
+  },
+  "files": [
+    "lib",
+    "runtime",
+    "cli",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "typespec",
+    "typespec-emitter",
+    "enum",
+    "enum-plus"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:package": "node --test test/package.test.mjs",
+    "prepublishOnly": "pnpm test"
+  },
+  "peerDependencies": {
+    "@typespec/compiler": "~1.15.0"
+  },
+  "devDependencies": {
+    "@typespec/compiler": "1.15.0",
+    "enum-plus": "3.3.0",
+    "typescript": "6.0.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
+}

@@ -1,0 +1,229 @@
+import { emitFile, resolvePath } from "@typespec/compiler";
+import { reportDiagnostic, stateKeys } from "./lib.js";
+
+const codeNamePattern = /^[A-Z][A-Za-z0-9]*$/;
+
+function report(program, code, target, format) {
+  reportDiagnostic(program, { code, target, format });
+}
+
+function validateAndCollect(program) {
+  const itemMetadata = program.stateMap(stateKeys.enumItems);
+  const exported = [];
+  const names = new Map();
+  const generatedNames = new Set(["Enum"]);
+  let invalid = false;
+
+  for (const [enumType, config] of program.stateMap(stateKeys.exportedEnums)) {
+    if (!codeNamePattern.test(enumType.name)) {
+      report(program, "invalid-code-name", enumType, { kind: "enum", name: enumType.name });
+      invalid = true;
+    }
+
+    const previous = names.get(enumType.name);
+    if (previous) {
+      report(program, "duplicate-export-name", enumType, { name: enumType.name });
+      invalid = true;
+    } else {
+      names.set(enumType.name, enumType);
+    }
+
+    for (const name of [enumType.name, `${enumType.name}Value`]) {
+      if (generatedNames.has(name)) {
+        report(program, "generated-name-conflict", enumType, { name });
+        invalid = true;
+      }
+      generatedNames.add(name);
+    }
+
+    const members = [];
+    const valueTypes = new Set();
+    const values = new Set();
+    let declarationIndex = 0;
+
+    for (const member of enumType.members.values()) {
+      if (!codeNamePattern.test(member.name)) {
+        report(program, "invalid-code-name", member, { kind: "enum member", name: member.name });
+        invalid = true;
+      }
+
+      const metadata = itemMetadata.get(member);
+      if (!metadata) {
+        report(program, "missing-item-metadata", member, { name: `${enumType.name}.${member.name}` });
+        invalid = true;
+      }
+
+      if (member.value === undefined) {
+        report(program, "implicit-value", member, { name: `${enumType.name}.${member.name}` });
+        invalid = true;
+      } else {
+        valueTypes.add(typeof member.value);
+        const valueIdentity = `${typeof member.value}:${JSON.stringify(member.value)}`;
+        if (values.has(valueIdentity)) {
+          report(program, "duplicate-value", member, {
+            name: enumType.name,
+            value: JSON.stringify(member.value),
+          });
+          invalid = true;
+        }
+        values.add(valueIdentity);
+      }
+
+      members.push({
+        name: member.name,
+        value: member.value,
+        metadata,
+        declarationIndex: declarationIndex++,
+      });
+    }
+
+    if (valueTypes.size > 1) {
+      report(program, "mixed-value-types", enumType, { name: enumType.name });
+      invalid = true;
+    }
+
+    exported.push({ name: enumType.name, domain: config.domain, members });
+  }
+
+  return { exported, invalid };
+}
+
+function renderLiteral(value) {
+  if (typeof value !== "string") return JSON.stringify(value);
+
+  let result = "'";
+  for (const character of value) {
+    if (character === "\\") result += "\\\\";
+    else if (character === "'") result += "\\'";
+    else if (character === "\n") result += "\\n";
+    else if (character === "\r") result += "\\r";
+    else if (character === "\t") result += "\\t";
+    else {
+      const codePoint = character.codePointAt(0);
+      if (codePoint < 0x20 || codePoint === 0x7f || codePoint === 0x2028 || codePoint === 0x2029)
+        result += `\\u${codePoint.toString(16).padStart(4, "0")}`;
+      else result += character;
+    }
+  }
+  return `${result}'`;
+}
+
+function renderProperty(name, value, indent = "    ") {
+  return `${indent}${name}: ${renderLiteral(value)},`;
+}
+
+function renderEnum(enumType) {
+  const members = [...enumType.members].sort((left, right) => {
+    const leftOrdered = left.metadata?.order !== undefined;
+    const rightOrdered = right.metadata?.order !== undefined;
+    if (leftOrdered && rightOrdered) {
+      return left.metadata.order - right.metadata.order || left.declarationIndex - right.declarationIndex;
+    }
+    if (leftOrdered !== rightOrdered) return leftOrdered ? -1 : 1;
+    return left.declarationIndex - right.declarationIndex;
+  });
+
+  const lines = [`export const ${enumType.name} = Enum({`];
+  for (const member of members) {
+    lines.push(`  ${member.name}: {`);
+    lines.push(renderProperty("value", member.value));
+    lines.push(renderProperty("label", member.metadata.label));
+    for (const field of ["description", "color", "order", "disabled", "hidden"]) {
+      if (member.metadata[field] !== undefined) {
+        lines.push(renderProperty(field, member.metadata[field]));
+      }
+    }
+    lines.push("  },");
+  }
+  lines.push("} as const)");
+  lines.push("");
+  lines.push(`export type ${enumType.name}Value = typeof ${enumType.name}.valueType`);
+  return lines.join("\n");
+}
+
+function renderDomain(enums) {
+  const sections = enums
+    .sort((left, right) => left.name.localeCompare(right.name, "en"))
+    .map(renderEnum);
+  return [
+    "// This file is generated bytypespec-enum-plus-emitter. Do not edit.",
+    "import { Enum } from 'enum-plus'",
+    "",
+    sections.join("\n\n"),
+    "",
+  ].join("\n");
+}
+
+function renderApiTypes(byDomain) {
+  const sections = [...byDomain.entries()]
+    .sort(([left], [right]) => left.localeCompare(right, "en"))
+    .map(([domain, enums]) => [
+      "export type {",
+      ...enums
+        .sort((left, right) => left.name.localeCompare(right.name, "en"))
+        .map(({ name }) => `  ${name}Value as ${name},`),
+      `} from './${domain}'`,
+    ].join("\n"));
+  return [
+    "// This file is generated bytypespec-enum-plus-emitter. Do not edit.",
+    "",
+    sections.join("\n\n"),
+    "",
+  ].join("\n");
+}
+
+function renderIndex(domains) {
+  return [
+    "// This file is generated bytypespec-enum-plus-emitter. Do not edit.",
+    ...domains.map((domain) => `export * from './${domain}'`),
+    "",
+  ].join("\n");
+}
+
+export async function $onEmit(context) {
+  const { exported, invalid } = validateAndCollect(context.program);
+  if (invalid) return;
+
+  const byDomain = new Map();
+  for (const enumType of exported) {
+    const values = byDomain.get(enumType.domain) ?? [];
+    values.push(enumType);
+    byDomain.set(enumType.domain, values);
+  }
+
+  const domains = [...byDomain.keys()].sort((left, right) => left.localeCompare(right, "en"));
+  const files = [];
+  for (const domain of domains) {
+    const filename = `${domain}.ts`;
+    files.push(filename);
+    await emitFile(context.program, {
+      path: resolvePath(context.emitterOutputDir, filename),
+      content: renderDomain(byDomain.get(domain)),
+      newLine: "lf",
+    });
+  }
+
+  files.push("api-types.ts");
+  await emitFile(context.program, {
+    path: resolvePath(context.emitterOutputDir, "api-types.ts"),
+    content: renderApiTypes(byDomain),
+    newLine: "lf",
+  });
+
+  files.push("index.ts");
+  await emitFile(context.program, {
+    path: resolvePath(context.emitterOutputDir, "index.ts"),
+    content: renderIndex(domains),
+    newLine: "lf",
+  });
+
+  await emitFile(context.program, {
+    path: resolvePath(context.emitterOutputDir, "enum-manifest.json"),
+    content: `${JSON.stringify({
+      version: 2,
+      files,
+      types: exported.map(({ name }) => name).sort((left, right) => left.localeCompare(right, "en")),
+    }, null, 2)}\n`,
+    newLine: "lf",
+  });
+}
