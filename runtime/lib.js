@@ -2,6 +2,20 @@ import { createTypeSpecLibrary, paramMessage } from "@typespec/compiler";
 
 export const $lib = createTypeSpecLibrary({
   name: "typespec-enum-plus-emitter",
+  emitter: {
+    options: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        "api-types-mode": {
+          type: "string",
+          enum: ["re-export", "standalone"],
+          description: "Re-export enum-plus types, or emit independent literal union types. Defaults to re-export.",
+        },
+      },
+      required: [],
+    },
+  },
   diagnostics: {
     "reserved-domain": {
       severity: "error",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { access, appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cli, fixture, packageRoot, run } from "./helpers.mjs";
@@ -75,7 +75,11 @@ test("CLI rejects invalid manifests before modifying target files", async (t) =>
   const manifestPath = join(output, "enum-manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   for (const invalid of [
+    null,
     { ...manifest, version: 1 },
+    { ...manifest, files: ["status.ts", "status.ts"] },
+    { ...manifest, files: ["keep.txt"] },
+    { ...manifest, files: ["enum-manifest.json"] },
     { ...manifest, types: ["Status", "Status"] },
     { ...manifest, files: ["../outside.ts"] },
     { ...manifest, files: [join(root, "outside.ts")] },
@@ -97,4 +101,108 @@ test("CLI help, version, invalid arguments and check against missing output", as
   }
   assert.equal(invoke("--output", "missing", "--check").status, 1);
   await assert.rejects(access(join(root, "missing")));
+});
+
+
+test("CLI refuses unmanaged collisions and skips writing unchanged files", async (t) => {
+  const { root, output } = await setup(t);
+  const invoke = (...args) => run(process.execPath, [cli, "--output", output, ...args], root);
+  await mkdir(output);
+  await writeFile(join(output, "status.ts"), "user-owned");
+  let before = await contents(output);
+  let result = invoke();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unmanaged file/);
+  assert.deepEqual(await contents(output), before);
+  await rm(join(output, "status.ts"));
+  assert.equal(invoke().status, 0);
+  const timestamps = async () => Object.fromEntries(await Promise.all((await readdir(output)).map(async (name) =>
+    [name, (await stat(join(output, name), { bigint: true })).mtimeNs])));
+  const initialTimes = await timestamps();
+  assert.equal(invoke().status, 0);
+  assert.deepEqual(await timestamps(), initialTimes);
+  const external = join(root, "external.ts");
+  await writeFile(external, "external");
+  await rm(join(output, "status.ts"));
+  await symlink(external, join(output, "status.ts"));
+  for (const args of [[], ["--check"]]) {
+    result = invoke(...args);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /symbolic link/);
+    assert.equal(await readFile(external, "utf8"), "external");
+  }
+});
+
+test("CLI explicitly loads config, preserves imports, and overrides emitter and output settings", async (t) => {
+  const { root, output } = await setup(t);
+  const config = join(root, "config.yaml");
+  const configuredOutput = join(root, "must-not-write");
+  const imported = join(root, "extra.tsp");
+  await writeFile(imported, `
+    @EnumExport.exportEnum(#{ domain: "extra", name: "ExtraStatus" })
+    enum Extra { @EnumExport.enumItem(#{ label: "Extra" }) Value: "extra" }
+  `);
+  await writeFile(join(root, "base.yaml"), `options:
+  typespec-enum-plus-emitter:
+    api-types-mode: standalone
+    emitter-output-dir: "{output-dir}/enums"
+`);
+  await writeFile(config, `extends: ./base.yaml
+output-dir: "{project-root}/must-not-write"
+emit:
+  - missing-emitter-must-not-run
+imports:
+  - "${imported.replaceAll("\\", "/")}"
+`);
+  const invoke = (...args) => run(process.execPath, [cli, "../main.tsp", "--output", "../generated", "--config", "../config.yaml", ...args], join(root, "caller"));
+  await mkdir(join(root, "caller"));
+  let result = invoke();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  let types = await readFile(join(output, "api-types.ts"), "utf8");
+  assert.match(types, /export type ExtraStatus = 'extra'/);
+  assert.doesNotMatch(types, /from /);
+  await assert.rejects(access(configuredOutput));
+  assert.equal(invoke("--check").status, 0);
+  result = invoke("--api-types-mode", "re-export");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(await readFile(join(output, "api-types.ts"), "utf8"), /ExtraStatusValue as ExtraStatus/);
+  const before = await contents(output);
+  for (const configText of ["options: [broken", "options:\n  typespec-enum-plus-emitter:\n    unknown-option: true\n"]) {
+    await writeFile(config, configText);
+    result = invoke();
+    assert.equal(result.status, 1);
+    assert.deepEqual(await contents(output), before);
+  }
+  await rm(config);
+  assert.equal(invoke().status, 1);
+  assert.deepEqual(await contents(output), before);
+});
+
+test("CLI warning flags override config and retain strict default", async (t) => {
+  const { root, main, output } = await setup(t);
+  await appendFile(main, '\n#deprecated "Use NewModel"\nmodel OldModel {}\nmodel UsesOld extends OldModel {}\n');
+  const invoke = (...args) => run(process.execPath, [cli, "--output", output, ...args], root);
+  let result = invoke();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /deprecated/);
+  result = invoke("--no-warnings-as-errors");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /deprecated/);
+  const before = await contents(output);
+  await writeFile(join(root, "config.yaml"), "warn-as-error: false\n");
+  assert.equal(invoke("--config", "config.yaml").status, 0);
+  assert.equal(invoke("--config", "config.yaml", "--warnings-as-errors").status, 1);
+  await writeFile(join(root, "config.yaml"), "warn-as-error: true\n");
+  assert.equal(invoke("--config", "config.yaml").status, 1);
+  assert.equal(invoke("--config", "config.yaml", "--no-warnings-as-errors").status, 0);
+  assert.deepEqual(await contents(output), before);
+});
+
+test("CLI validates new option arguments", async (t) => {
+  const { root, output } = await setup(t);
+  for (const args of [["--config"], ["--config", "--check"], ["--api-types-mode"], ["--api-types-mode", "other"]]) {
+    const result = run(process.execPath, [cli, "--output", output, ...args], root);
+    assert.equal(result.status, 1);
+    await assert.rejects(access(output));
+  }
 });

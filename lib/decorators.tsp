@@ -6,6 +6,9 @@ namespace EnumExport;
 model ExportEnumOptions {
   /** Safe kebab-case module name, for example `status`. `index` and `api-types` are reserved. */
   domain: string;
+
+  /** Optional generated PascalCase name; defaults to the source enum name. */
+  name?: string;
 }
 
 /** UI metadata exported with an enum member. */

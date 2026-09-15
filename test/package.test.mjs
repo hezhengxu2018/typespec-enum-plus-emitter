@@ -38,6 +38,34 @@ test("published tarball works in an independent consumer via CLI and standard em
   await writeFile(join(root, "usage.ts"), typeUsage);
   result = run("pnpm", ["exec", "tsc", ...tscArgs], root);
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  // Exercise the new options through the installed CLI and standard emitter.
+  await writeFile(join(root, "main.tsp"), `import "typespec-enum-plus-emitter";\n${fixture}
+namespace Sales {
+  @EnumExport.exportEnum(#{ domain: "sales", name: "SalesStatus" })
+  enum Status { @EnumExport.enumItem(#{ label: "Open" }) Open: "open" }
+}
+`);
+  await writeFile(join(root, "tspconfig.yaml"), `emit:
+  - typespec-enum-plus-emitter
+options:
+  typespec-enum-plus-emitter:
+    emitter-output-dir: "{output-dir}/enums"
+    api-types-mode: standalone
+`);
+  result = run("pnpm", ["exec", "typespec-enum-plus-emitter", "--output", "generated", "--config", "tspconfig.yaml"], root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  result = run("pnpm", ["exec", "tsp", "compile", ".", "--output-dir", "standard"], root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  for (const file of await readdir(join(root, "generated"))) {
+    assert.equal(await readFile(join(root, "generated", file), "utf8"), await readFile(join(root, "standard/enums", file), "utf8"));
+  }
+  const apiTypes = await readFile(join(root, "generated/api-types.ts"), "utf8");
+  assert.match(apiTypes, /export type SalesStatus = 'open'/);
+  assert.doesNotMatch(apiTypes, /from /);
+  result = run("pnpm", ["exec", "tsc", ...tscArgs], root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  result = run("pnpm", ["exec", "typespec-enum-plus-emitter", "--output", "generated", "--config", "tspconfig.yaml", "--check"], root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
   // The consumer is outside the source repository and never imports its runtime paths.
   assert.ok(!root.startsWith(packageRoot));
 });

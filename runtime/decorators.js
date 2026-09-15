@@ -21,7 +21,7 @@ export function $exportEnum(context, target, options) {
     return;
   }
 
-  context.program.stateMap(stateKeys.exportedEnums).set(target, { domain });
+  context.program.stateMap(stateKeys.exportedEnums).set(target, { domain, name: options.name });
 }
 
 export function $enumItem(context, target, options) {
