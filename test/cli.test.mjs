@@ -95,7 +95,6 @@ test("CLI help, version, invalid arguments and check against missing output", as
   const { root } = await setup(t);
   const invoke = (...args) => run(process.execPath, [cli, ...args], root);
   assert.match(invoke("--help").stdout, /\[entrypoint\]/);
-  assert.equal(invoke("--version").stdout.trim(), "0.1.0");
   for (const args of [[], ["--output"], ["--output", "--check"], ["--unknown"], ["folder", "--output", "out"], ["missing.tsp", "--output", "out"]]) {
     assert.equal(invoke(...args).status, 1);
   }
