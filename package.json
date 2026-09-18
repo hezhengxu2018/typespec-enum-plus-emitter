@@ -1,6 +1,6 @@
 {
   "name": "typespec-enum-plus-emitter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeSpec decorators, emitter and CLI for generating enum-plus modules.",
   "license": "MIT",
   "type": "module",
