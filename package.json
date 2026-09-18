@@ -39,10 +39,10 @@
     "prepublishOnly": "pnpm test"
   },
   "peerDependencies": {
-    "@typespec/compiler": "~1.15.0"
+    "@typespec/compiler": "^1.15.0"
   },
   "devDependencies": {
-    "@typespec/compiler": "1.15.0",
+    "@typespec/compiler": "^1.15.0",
     "enum-plus": "3.3.0",
     "typescript": "6.0.2"
   },
